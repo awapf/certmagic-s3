@@ -11,6 +11,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/zap"
+	"io"
 	"io/fs"
 	"io/ioutil"
 	"os"
@@ -169,18 +170,18 @@ func (s3 S3) Lock(ctx context.Context, key string) error {
 		if err == nil {
 			return s3.putLockFile(ctx, key)
 		}
-		buf, err := ioutil.ReadAll(obj)
+		buf, err := io.ReadAll(obj)
 		if err != nil {
 			// Retry
 			continue
 		}
 		lt, err := time.Parse(time.RFC3339, string(buf))
 		if err != nil {
-			// Lock file does not make sense, overwrite.
+			s3.logger.Error(fmt.Sprintf("Invalid lock file: %v", s3.objName(key)))
 			return s3.putLockFile(ctx, key)
 		}
 		if lt.Add(LockTimeout).Before(time.Now()) {
-			// Existing lock file expired, overwrite.
+			s3.logger.Info(fmt.Sprintf("Lock expired: %v", s3.objName(key)))
 			return s3.putLockFile(ctx, key)
 		}
 
@@ -193,6 +194,7 @@ func (s3 S3) Lock(ctx context.Context, key string) error {
 
 func (s3 *S3) putLockFile(ctx context.Context, key string) error {
 	// Object does not exist, we're creating a lock file.
+	s3.logger.Info(fmt.Sprintf("Create lock: %v", s3.objName(key)))
 	r := bytes.NewReader([]byte(time.Now().Format(time.RFC3339)))
 	_, err := s3.Client.PutObject(ctx, s3.Bucket, s3.objLockName(key), r, int64(r.Len()), minio.PutObjectOptions{})
 	return err
