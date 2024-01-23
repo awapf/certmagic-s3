@@ -152,8 +152,8 @@ func (S3) CaddyModule() caddy.ModuleInfo {
 
 var (
 	LockExpiration   = 2 * time.Minute
-	LockPollInterval = 1 * time.Second
-	LockTimeout      = 15 * time.Second
+	LockPollInterval = 10 * time.Second
+	LockTimeout      = 120 * time.Second
 )
 
 func (s3 S3) CertMagicStorage() (certmagic.Storage, error) {
@@ -185,6 +185,7 @@ func (s3 S3) Lock(ctx context.Context, key string) error {
 		}
 
 		if startedAt.Add(LockTimeout).Before(time.Now()) {
+			s3.logger.Info(fmt.Sprintf("Ackquireing lock failed: %v", s3.objName(key)))
 			return errors.New("acquiring lock failed")
 		}
 		time.Sleep(LockPollInterval)
