@@ -3,20 +3,21 @@ package certmagic_s3
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"io/fs"
-	"io/ioutil"
-	"os"
-	"path"
-	"strconv"
-	"strings"
-
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/certmagic"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/zap"
+	"io/fs"
+	"io/ioutil"
+	"os"
+	"path"
+	"strconv"
+	"strings"
+	"time"
 )
 
 type S3 struct {
@@ -149,16 +150,64 @@ func (S3) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
+var (
+	LockExpiration   = 2 * time.Minute
+	LockPollInterval = 1 * time.Second
+	LockTimeout      = 15 * time.Second
+)
+
 func (s3 S3) CertMagicStorage() (certmagic.Storage, error) {
 	return s3, nil
 }
 
 func (s3 S3) Lock(ctx context.Context, key string) error {
-	return nil
+	s3.logger.Info(fmt.Sprintf("Lock: %v", s3.objName(key)))
+	var startedAt = time.Now()
+
+	for {
+		obj, err := s3.Client.GetObject(ctx, s3.Bucket, s3.objLockName(key), minio.GetObjectOptions{})
+		if err == nil {
+			return s3.putLockFile(ctx, key)
+		}
+		buf, err := ioutil.ReadAll(obj)
+		if err != nil {
+			// Retry
+			continue
+		}
+		lt, err := time.Parse(time.RFC3339, string(buf))
+		if err != nil {
+			// Lock file does not make sense, overwrite.
+			return s3.putLockFile(ctx, key)
+		}
+		if lt.Add(LockTimeout).Before(time.Now()) {
+			// Existing lock file expired, overwrite.
+			return s3.putLockFile(ctx, key)
+		}
+
+		if startedAt.Add(LockTimeout).Before(time.Now()) {
+			return errors.New("acquiring lock failed")
+		}
+		time.Sleep(LockPollInterval)
+	}
+}
+
+func (s3 *S3) putLockFile(ctx context.Context, key string) error {
+	// Object does not exist, we're creating a lock file.
+	r := bytes.NewReader([]byte(time.Now().Format(time.RFC3339)))
+	_, err := s3.Client.PutObject(ctx, s3.Bucket, s3.objLockName(key), r, int64(r.Len()), minio.PutObjectOptions{})
+	return err
+}
+func (s3 *S3) objName(key string) string {
+	return fmt.Sprintf("%s/%s", strings.TrimPrefix(s3.Prefix, "/"), strings.TrimPrefix(key, "/"))
+}
+
+func (s3 *S3) objLockName(key string) string {
+	return s3.objName(key) + ".lock"
 }
 
 func (s3 S3) Unlock(ctx context.Context, key string) error {
-	return nil
+	s3.logger.Info(fmt.Sprintf("Release lock: %v", s3.objName(key)))
+	return s3.Client.RemoveObject(ctx, s3.Bucket, s3.objLockName(key), minio.RemoveObjectOptions{})
 }
 
 func (s3 S3) Store(ctx context.Context, key string, value []byte) error {
