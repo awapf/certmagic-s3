@@ -13,7 +13,6 @@ import (
 	"go.uber.org/zap"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"os"
 	"path"
 	"strconv"
@@ -238,7 +237,7 @@ func (s3 S3) Load(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 
-	return ioutil.ReadAll(object)
+	return io.ReadAll(object)
 }
 
 func (s3 S3) Delete(ctx context.Context, key string) error {
